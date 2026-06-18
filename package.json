@@ -1,0 +1,9 @@
+{
+  "name": "pokevault",
+  "version": "9.1.0",
+  "description": "Pok\u00e9mon card price tracker \u2014 v9.1 auth fix",
+  "scripts": {
+    "dev": "vercel dev"
+  },
+  "dependencies": {}
+}
