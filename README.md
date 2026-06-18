@@ -1,4 +1,4 @@
-# PokéVault v9.13 (fixed)
+# PokéVault v9.14 (fixed)
 
 ## Bug fixes in this build
 - **500 error on signup fixed** — signup now routes through `/api/auth` (Vercel serverless) which uses the Supabase Admin API (service_role key). This bypasses the "email signups disabled" restriction entirely.
