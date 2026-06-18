@@ -1410,3 +1410,26 @@ select.form-input option { background: var(--bg3); }
   box-shadow: 0 0 0 3px rgba(0,229,204,0.08);
 }
 .pf-set-input::placeholder { color: var(--text3); }
+
+@media (max-width: 600px) {
+  /* Hide non-essential portfolio columns on mobile */
+  .pf-table thead th:nth-child(2),  /* Set */
+  .pf-table thead th:nth-child(3),  /* Condition */
+  .pf-table thead th:nth-child(4),  /* Qty */
+  .pf-table tbody td:nth-child(2),
+  .pf-table tbody td:nth-child(3),
+  .pf-table tbody td:nth-child(4) {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  /* Tighten header on very small screens */
+  .header-right { gap: 6px; }
+  .header-badge, .header-user { font-size: 9px; }
+  .btn-logout { padding: 4px 8px; font-size: 10px; }
+
+  /* Portfolio search filters stack fully */
+  .pf-search-row { grid-template-columns: 1fr; }
+  .pf-search-row .search-wrap { grid-column: 1 / -1; }
+}
