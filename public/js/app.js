@@ -1,4 +1,4 @@
-/* ═══════════════════════════════════════════════════════════════════
+=/* ═══════════════════════════════════════════════════════════════════
    POKEVAULT — app.js
    Tabs: Search | Portfolio
    History window: 5 days before account creation → today (fixed window)
@@ -245,29 +245,32 @@ function extractResultPrice(r, isSealed) {
 }
 
 // ── Graded Price Extraction ───────────────────────────────────────
-// The API returns graded eBay data as r.ebay: { psa10: { avg, salesCount, ... }, psa9: {...}, bgs9_5: {...}, ... }
-// conditionOrGrade is stored as e.g. "PSA 10", "PSA 9", "BGS 9.5", "BGS 10"
-// This converts that label to the API key (e.g. "psa10", "bgs9_5") and reads the avg price.
+// Actual API shape (confirmed via debug):
+//   r.ebay.salesByGrade.psa10.smartMarketPrice.price  ← what we want
+//   r.ebay.salesByGrade.psa10.averagePrice            ← fallback
+//
+// conditionOrGrade is stored as "PSA 10", "PSA 9", "BGS 9.5", "BGS 10" etc.
+// Key mapping: "PSA 10" → "psa10", "BGS 9.5" → "bgs9_5", "CGC 8.5" → "cgc8_5"
 function extractGradedPrice(apiResult, conditionOrGrade) {
   if (!apiResult || !conditionOrGrade) return null;
 
   const gradeMatch = conditionOrGrade.match(/^(PSA|BGS|CGC)\s+(.+)$/i);
   if (!gradeMatch) return null;
 
-  const company = gradeMatch[1].toLowerCase();                      // "psa", "bgs", "cgc"
-  const grade   = gradeMatch[2].trim().replace('.', '_');           // "10" → "10", "9.5" → "9_5"
-  const key     = company + grade;                                  // "psa10", "bgs9_5", "cgc9"
+  const company = gradeMatch[1].toLowerCase();               // "psa", "bgs", "cgc"
+  const grade   = gradeMatch[2].trim().replace('.', '_');    // "9.5" → "9_5", "10" → "10"
+  const key     = company + grade;                           // "psa10", "bgs9_5"
 
-  // The API nests this under r.ebay (from includeEbay=true)
-  const ebay = apiResult.ebay ?? apiResult.ebaySales ?? apiResult.ebay_sales ?? null;
-  if (!ebay || typeof ebay !== 'object') return null;
+  const salesByGrade = apiResult?.ebay?.salesByGrade;
+  if (!salesByGrade || typeof salesByGrade !== 'object') return null;
 
-  // Try the exact key first, then a few common aliases the API may use
-  const entry = ebay[key] ?? ebay[company + '_' + grade] ?? null;
+  const entry = salesByGrade[key];
   if (!entry) return null;
 
-  // The docs show { avg, salesCount, smartMarketPrice, ... } — prefer smartMarketPrice then avg
-  const price = parseFloat(entry.smartMarketPrice ?? entry.avg ?? entry.averagePrice ?? entry.price ?? 0);
+  // Prefer smartMarketPrice.price (confidence-weighted), fall back to averagePrice
+  const price = parseFloat(
+    entry.smartMarketPrice?.price ?? entry.averagePrice ?? entry.medianPrice ?? 0
+  );
   return price > 0 ? price : null;
 }
 
