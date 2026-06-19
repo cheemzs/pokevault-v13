@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head><title>PokéVault API Debug</title>
+<style>
+  body { font-family: monospace; background: #0e1017; color: #f0f2ff; padding: 20px; }
+  pre { background: #1a1d2e; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+  button { background: #00e5cc; color: #000; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; margin: 8px 4px; }
+  h2 { color: #00e5cc; }
+  .label { color: #a8b0d0; font-size: 13px; margin-top: 16px; }
+  input { background: #1a1d2e; color: #f0f2ff; border: 1px solid #2a2d3e; padding: 8px 12px; border-radius: 6px; width: 300px; }
+</style>
+</head>
+<body>
+<h2>🔍 PokéVault API Debug Tool</h2>
+<p style="color:#a8b0d0">This fetches a card from your API and logs the <strong>exact response shape</strong> — paste the output below to diagnose the graded price issue.</p>
+
+<div class="label">Card name to test:</div>
+<input id="cardName" value="Charizard" placeholder="e.g. Charizard" />
+<br>
+<button onclick="runTest()">🔎 Fetch & Log Response</button>
+<button onclick="document.getElementById('out').textContent=''">Clear</button>
+
+<div class="label">Raw API response (share this):</div>
+<pre id="out">Click the button above to test...</pre>
+
+<script>
+async function runTest() {
+  const name = document.getElementById('cardName').value.trim() || 'Charizard';
+  const out = document.getElementById('out');
+  out.textContent = 'Fetching...';
+
+  try {
+    const params = new URLSearchParams({ action: 'search', name, language: 'english', includeEbay: 'true' });
+    const res = await fetch('/api/pokeprice?' + params);
+    const data = await res.json();
+    const results = data.results || [];
+
+    if (!results.length) { out.textContent = 'No results returned.'; return; }
+
+    const r = results[0];
+
+    // Show the keys we care about
+    const debug = {
+      '1_card_name':        r.name,
+      '2_tcgPlayerId':      r.tcgPlayerId,
+      '3_prices_keys':      r.prices ? Object.keys(r.prices) : 'NO prices field',
+      '4_prices_values':    r.prices,
+      '5_ebay_field':       r.ebay      ?? 'MISSING — not r.ebay',
+      '6_ebaySales_field':  r.ebaySales ?? 'MISSING — not r.ebaySales',
+      '7_ebay_sales_field': r.ebay_sales ?? 'MISSING — not r.ebay_sales',
+      '8_gradedSales':      r.gradedSales ?? 'MISSING',
+      '9_ALL_top_level_keys': Object.keys(r),
+      '10_full_first_result': r,
+    };
+
+    out.textContent = JSON.stringify(debug, null, 2);
+  } catch(e) {
+    out.textContent = 'ERROR: ' + e.message;
+  }
+}
+</script>
+</body>
+</html>
