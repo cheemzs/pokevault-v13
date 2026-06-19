@@ -113,7 +113,6 @@ async function loadProfile() {
     .single();
 
   if (error && error.code === 'PGRST116') {
-    // Row doesn't exist yet — derive username from email (always reliable)
     const { data: { user } } = await _sb.auth.getUser();
     const email = user?.email || '';
     const usernameVal = user?.user_metadata?.username
@@ -145,7 +144,6 @@ async function init() {
   _currentUserId = session.user.id;
   const usernameEl = document.getElementById('username-display');
   if (usernameEl) {
-    // Show username from metadata if available, otherwise strip @pokevault.app suffix
     const email = session.user.email || '';
     const metaUsername = session.user.user_metadata?.username;
     usernameEl.textContent = metaUsername || email.replace('@pokevault.app', '').replace(/@.*/, '');
@@ -154,8 +152,6 @@ async function init() {
   await Promise.all([fetchExchangeRate(), loadProfile()]);
   await loadPortfolioItems();
   setupSearchListeners();
-  // First-time users (empty portfolio) land on Search so they can add cards.
-  // Returning users go straight to Portfolio — search tab is hidden for them.
   const isFirstTime = portfolioItems.filter(i => !i.sold).length === 0;
   switchMainTab(isFirstTime ? 'search' : 'portfolio');
   updateSearchTabVisibility();
@@ -176,13 +172,10 @@ function switchMainTab(tab) {
   document.getElementById('nav-portfolio').setAttribute('aria-selected', tab === 'portfolio');
 }
 
-// Show the Search tab only for first-time users (empty portfolio).
-// Once they have items, the portfolio's built-in search handles everything.
 function updateSearchTabVisibility() {
   const hasItems  = portfolioItems.filter(i => !i.sold).length > 0;
   const navSearch = document.getElementById('nav-search');
   if (navSearch) navSearch.style.display = hasItems ? 'none' : '';
-  // If the tab just got hidden while on it, redirect to portfolio
   if (hasItems && document.getElementById('tab-search')?.style.display !== 'none') {
     switchMainTab('portfolio');
   }
@@ -249,6 +242,33 @@ function extractResultPrice(r, isSealed) {
   if (r.marketPrice      != null) return r.marketPrice;
   if (r.price            != null) return r.price;
   return null;
+}
+
+// ── Graded Price Extraction ───────────────────────────────────────
+// The API returns graded eBay data as r.ebay: { psa10: { avg, salesCount, ... }, psa9: {...}, bgs9_5: {...}, ... }
+// conditionOrGrade is stored as e.g. "PSA 10", "PSA 9", "BGS 9.5", "BGS 10"
+// This converts that label to the API key (e.g. "psa10", "bgs9_5") and reads the avg price.
+function extractGradedPrice(apiResult, conditionOrGrade) {
+  if (!apiResult || !conditionOrGrade) return null;
+
+  const gradeMatch = conditionOrGrade.match(/^(PSA|BGS|CGC)\s+(.+)$/i);
+  if (!gradeMatch) return null;
+
+  const company = gradeMatch[1].toLowerCase();                      // "psa", "bgs", "cgc"
+  const grade   = gradeMatch[2].trim().replace('.', '_');           // "10" → "10", "9.5" → "9_5"
+  const key     = company + grade;                                  // "psa10", "bgs9_5", "cgc9"
+
+  // The API nests this under r.ebay (from includeEbay=true)
+  const ebay = apiResult.ebay ?? apiResult.ebaySales ?? apiResult.ebay_sales ?? null;
+  if (!ebay || typeof ebay !== 'object') return null;
+
+  // Try the exact key first, then a few common aliases the API may use
+  const entry = ebay[key] ?? ebay[company + '_' + grade] ?? null;
+  if (!entry) return null;
+
+  // The docs show { avg, salesCount, smartMarketPrice, ... } — prefer smartMarketPrice then avg
+  const price = parseFloat(entry.smartMarketPrice ?? entry.avg ?? entry.averagePrice ?? entry.price ?? 0);
+  return price > 0 ? price : null;
 }
 
 // ── Chart Helpers ─────────────────────────────────────────────────
@@ -322,7 +342,6 @@ function setupSearchListeners() {
   input?.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
   setInp?.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
 
-  // Language toggle
   document.querySelectorAll('.lang-btn:not(.pf-lang-btn)').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.lang-btn:not(.pf-lang-btn)').forEach(b => {
@@ -335,7 +354,6 @@ function setupSearchListeners() {
     });
   });
 
-  // Search type toggle (Cards / Sealed)
   document.querySelectorAll('.search-type-btn:not(#pf-type-cards):not(#pf-type-sealed)').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.search-type-btn:not(#pf-type-cards):not(#pf-type-sealed)').forEach(b => b.classList.remove('active'));
@@ -344,7 +362,6 @@ function setupSearchListeners() {
     });
   });
 
-  // Hint chips
   document.querySelectorAll('.hint-chip, .example-chip').forEach(chip => {
     chip.addEventListener('click', () => {
       const q = chip.dataset.query;
@@ -361,7 +378,6 @@ function setupSearchListeners() {
     });
   });
 
-  // View toggle
   document.querySelectorAll('.view-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
@@ -587,8 +603,6 @@ async function openCardDetailModal(itemId) {
   `;
 
   overlay.classList.add('active');
-
-  // Load chart data
   await loadCardPriceHistory(item);
 }
 
@@ -606,7 +620,6 @@ async function loadCardPriceHistory(item) {
 
   if (!loadingEl || !canvasEl) return;
 
-  // Try Supabase cache first
   try {
     const { data: rows, error } = await _sb
       .from('price_history_cache')
@@ -620,7 +633,6 @@ async function loadCardPriceHistory(item) {
     }
   } catch(e) { console.warn('Cache fetch failed:', e); }
 
-  // Fall back: fetch live with history
   try {
     const isSealed = item.type === 'sealed';
     const lang = item.language || 'english';
@@ -637,15 +649,11 @@ async function loadCardPriceHistory(item) {
     const data = await res.json();
     const results = data.results || [];
 
-    if (!results.length) {
-      showCardChartEmpty(loadingEl, canvasEl, emptyEl);
-      return;
-    }
+    if (!results.length) { showCardChartEmpty(loadingEl, canvasEl, emptyEl); return; }
 
     const r = results[0];
     const history = r.priceHistory || r.history || [];
     if (history.length < 2) {
-      // Use current price as single point
       const price = extractResultPrice(r, isSealed);
       if (price != null) {
         const today = new Date().toISOString().split('T')[0];
@@ -670,15 +678,9 @@ async function loadCardPriceHistory(item) {
 
 function renderCardChart(canvasEl, loadingEl, emptyEl, rows, name) {
   loadingEl.style.display = 'none';
-
-  if (!rows || rows.length === 0) {
-    showCardChartEmpty(loadingEl, canvasEl, emptyEl);
-    return;
-  }
-
+  if (!rows || rows.length === 0) { showCardChartEmpty(loadingEl, canvasEl, emptyEl); return; }
   const labels = rows.map(r => r.recorded_date);
   const values = rows.map(r => Number(r.price) * USD_TO_SGD);
-
   canvasEl.style.display = 'block';
   _cardDetailChart = destroyChart(_cardDetailChart);
   _cardDetailChart = new Chart(canvasEl, buildChartConfig(labels, values, name + ' (SGD)', '#00e5cc'));
@@ -697,7 +699,7 @@ function closeCardDetailModal(e) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-//  PORTFOLIO CHART MODAL (full portfolio value over time)
+//  PORTFOLIO CHART MODAL
 // ══════════════════════════════════════════════════════════════════
 
 async function openPortfolioChartModal() {
@@ -722,9 +724,7 @@ async function openPortfolioChartModal() {
   }
 
   try {
-    // Fetch history for all items from Supabase cache
     const itemIds = active.map(i => i.itemId).filter(Boolean);
-
     const { data: rows, error } = await _sb
       .from('price_history_cache')
       .select('item_id, recorded_date, price')
@@ -732,20 +732,13 @@ async function openPortfolioChartModal() {
       .order('recorded_date', { ascending: true });
 
     if (error || !rows || rows.length === 0) {
-      // Fallback: just use current values
       const today = new Date().toISOString().split('T')[0];
       const total = active.reduce((s, i) => s + (i.currentValue != null ? Number(i.currentValue) * (i.quantity||1) : Number(i.purchasePrice) * (i.quantity||1)), 0);
-      if (total === 0) {
-        loading.style.display = 'none';
-        errEl.style.display   = 'block';
-        return;
-      }
+      if (total === 0) { loading.style.display = 'none'; errEl.style.display = 'block'; return; }
       renderPortfolioChart(canvas, loading, [{ date: today, value: total }]);
       return;
     }
 
-    // Build day-by-day portfolio totals
-    // For each date, sum price * quantity for each item
     const dateMap = {};
     for (const row of rows) {
       const item = active.find(i => i.itemId === row.item_id);
@@ -757,15 +750,9 @@ async function openPortfolioChartModal() {
     }
 
     const dates = Object.keys(dateMap).sort();
-    if (dates.length === 0) {
-      loading.style.display = 'none';
-      errEl.style.display   = 'block';
-      return;
-    }
+    if (dates.length === 0) { loading.style.display = 'none'; errEl.style.display = 'block'; return; }
 
-    const points = dates.map(d => ({ date: d, value: dateMap[d] }));
-    renderPortfolioChart(canvas, loading, points);
-
+    renderPortfolioChart(canvas, loading, dates.map(d => ({ date: d, value: dateMap[d] })));
   } catch(e) {
     console.warn('Portfolio chart error:', e);
     loading.style.display = 'none';
@@ -776,11 +763,11 @@ async function openPortfolioChartModal() {
 function renderPortfolioChart(canvas, loading, points) {
   loading.style.display = 'none';
   canvas.style.display  = 'block';
-
-  const labels = points.map(p => p.date);
-  const values = points.map(p => p.value);
-
-  _portfolioChart = new Chart(canvas, buildChartConfig(labels, values, 'Portfolio Value (SGD)', '#7c6cff'));
+  _portfolioChart = new Chart(canvas, buildChartConfig(
+    points.map(p => p.date),
+    points.map(p => p.value),
+    'Portfolio Value (SGD)', '#7c6cff'
+  ));
 }
 
 function closePortfolioChartModal(e) {
@@ -812,9 +799,9 @@ function pfSearchDebounce() {
 
 async function pfSearch() {
   clearTimeout(_pfSearchDebounce);
-  const raw      = (document.getElementById('pf-search-input')?.value || '').trim();
+  const raw       = (document.getElementById('pf-search-input')?.value || '').trim();
   const setFilter = (document.getElementById('pf-set-input')?.value || '').trim();
-  const isSealed = _pfSearchType === 'sealed';
+  const isSealed  = _pfSearchType === 'sealed';
   const resultsEl = document.getElementById('pf-search-results');
 
   if (!raw) {
@@ -956,65 +943,44 @@ async function savePortfolioItem() {
   const imgUrl = r.imageCdnUrl || r.imageCdnUrl400 || r.imageCdnUrl200 || null;
   const itemId = String(r.tcgPlayerId || r.id || r.productId || crypto.randomUUID());
 
-  // ── Graded price lookup ──────────────────────────────────────────
-  // If the user selected a PSA/BGS grade, try to find the matching
-  // eBay sale price from the API's ebaySales array.
-  // Grade options are formatted like "PSA 10" or "BGS 9.5".
-  // The API stores them as { gradingCompany: "PSA", grade: "10", salePrice: ... }
+  // ── Graded price lookup ───────────────────────────────────────────
+  // API returns graded data as r.ebay.psa10.avg, r.ebay.psa9.avg, r.ebay.bgs9_5.avg etc.
+  // extractGradedPrice() converts "PSA 10" → key "psa10" and reads .smartMarketPrice ?? .avg
   let currentValueSGD = null;
 
-  const gradeMatch = conditionOrGrade.match(/^(PSA|BGS|CGC)\s+(.+)$/i);
-  if (gradeMatch && !isSealed) {
-    const selectedCompany = gradeMatch[1].toUpperCase();
-    const selectedGrade   = gradeMatch[2].trim();
+  const isGraded = !isSealed && /^(PSA|BGS|CGC)\s+/i.test(conditionOrGrade);
 
-    // ebaySales may already be on the result object (from the initial search fetch)
-    const ebaySales = r.ebaySales ?? r.ebay_sales ?? r.gradedSales ?? [];
-
-    const match = ebaySales.find(sale => {
-      const company = (sale.gradingCompany || sale.grading_company || sale.company || '').trim().toUpperCase();
-      const grade   = String(sale.grade ?? sale.gradeNumber ?? sale.grade_number ?? '').trim();
-      return company === selectedCompany && grade === selectedGrade;
-    });
-
-    if (match) {
-      const salePriceUSD = parseFloat(match.salePrice ?? match.sale_price ?? match.price ?? 0);
-      if (salePriceUSD > 0) {
-        currentValueSGD = Math.round(salePriceUSD * USD_TO_SGD * 100) / 100;
-      }
+  if (isGraded) {
+    // Check the result object already in memory first (no extra API call needed if ebay data is present)
+    const gradedUSD = extractGradedPrice(r, conditionOrGrade);
+    if (gradedUSD != null) {
+      currentValueSGD = Math.round(gradedUSD * USD_TO_SGD * 100) / 100;
     }
 
-    // If no eBay sale matched, fall back to fetching graded price live
+    // If the initial search didn't include eBay data, fetch it now with includeEbay=true
     if (currentValueSGD == null) {
       try {
         const params = new URLSearchParams({
-          action: 'search',
-          name: r.name,
-          language: _pfSearchLang,
+          action:      'search',
+          name:        r.name,
+          language:    _pfSearchLang,
           includeEbay: 'true',
         });
         if (r.setName) params.set('set', r.setName);
+        if (r.tcgPlayerId) params.set('tcgPlayerId', String(r.tcgPlayerId));
+
         const res  = await fetch('/api/pokeprice?' + params);
         const data = await res.json();
-        const results = data.results || [];
-        const liveResult = results[0];
+        const liveResult = (data.results || [])[0];
         if (liveResult) {
-          const liveSales = liveResult.ebaySales ?? liveResult.ebay_sales ?? liveResult.gradedSales ?? [];
-          const liveMatch = liveSales.find(sale => {
-            const company = (sale.gradingCompany || sale.grading_company || sale.company || '').trim().toUpperCase();
-            const grade   = String(sale.grade ?? sale.gradeNumber ?? sale.grade_number ?? '').trim();
-            return company === selectedCompany && grade === selectedGrade;
-          });
-          if (liveMatch) {
-            const salePriceUSD = parseFloat(liveMatch.salePrice ?? liveMatch.sale_price ?? liveMatch.price ?? 0);
-            if (salePriceUSD > 0) currentValueSGD = Math.round(salePriceUSD * USD_TO_SGD * 100) / 100;
-          }
+          const gradedUSD2 = extractGradedPrice(liveResult, conditionOrGrade);
+          if (gradedUSD2 != null) currentValueSGD = Math.round(gradedUSD2 * USD_TO_SGD * 100) / 100;
         }
       } catch (e) { console.warn('Graded price live fetch failed:', e); }
     }
   }
 
-  // Fall back to standard raw market price if no graded price was found
+  // Fall back to raw market price if not graded or no graded price found
   if (currentValueSGD == null) {
     const priceUSD = extractResultPrice(r, isSealed);
     currentValueSGD = priceUSD != null ? Math.round(priceUSD * USD_TO_SGD * 100) / 100 : null;
@@ -1044,8 +1010,6 @@ async function savePortfolioItem() {
   renderPortfolio();
   updateSearchTabVisibility();
   toast(`${r.name} added to portfolio.`, 'success');
-
-  // Auto-navigate to portfolio tab and close any open search results
   switchMainTab('portfolio');
 }
 
@@ -1068,7 +1032,6 @@ function renderPortfolio() {
 
   const active = portfolioItems.filter(i => !i.sold);
 
-  // Metrics
   const totalCost  = active.reduce((s, i) => s + Number(i.purchasePrice) * (i.quantity||1), 0);
   const totalValue = active.reduce((s, i) => {
     const val = i.currentValue != null ? Number(i.currentValue) : Number(i.purchasePrice);
@@ -1139,10 +1102,7 @@ async function deletePortfolioItem(id) {
 // ── Refresh portfolio current values ─────────────────────────────
 async function refreshPortfolioValues(silent = false) {
   const active = portfolioItems.filter(i => !i.sold);
-  if (!active.length) {
-    if (!silent) toast('No items to refresh.', 'info');
-    return;
-  }
+  if (!active.length) { if (!silent) toast('No items to refresh.', 'info'); return; }
 
   const btn = document.querySelector('.btn-refresh-small');
   if (btn) { btn.disabled = true; btn.textContent = '↻ Refreshing…'; }
@@ -1151,8 +1111,8 @@ async function refreshPortfolioValues(silent = false) {
 
   for (const item of active) {
     try {
-      const lang      = item.language || 'english';
-      const isSealed  = item.type === 'sealed';
+      const lang     = item.language || 'english';
+      const isSealed = item.type === 'sealed';
       let params;
 
       if (isSealed) {
@@ -1176,31 +1136,23 @@ async function refreshPortfolioValues(silent = false) {
       if (!results.length) continue;
 
       // ── Graded price lookup during refresh ────────────────────────
-      // If this portfolio item has a PSA/BGS/CGC grade, look for the
-      // matching eBay sale price instead of the raw market price.
+      // API returns r.ebay.psa10.avg etc. extractGradedPrice() reads this correctly.
+      // conditionOrGrade is "PSA 10", "BGS 9.5" etc — stored in the DB from when it was saved.
       let priceSGD = null;
-      const gradeMatch = (item.conditionOrGrade || '').match(/^(PSA|BGS|CGC)\s+(.+)$/i);
-      if (gradeMatch && !isSealed) {
-        const selectedCompany = gradeMatch[1].toUpperCase();
-        const selectedGrade   = gradeMatch[2].trim();
-        const ebaySales = results[0].ebaySales ?? results[0].ebay_sales ?? results[0].gradedSales ?? [];
-        const match = ebaySales.find(sale => {
-          const company = (sale.gradingCompany || sale.grading_company || sale.company || '').trim().toUpperCase();
-          const grade   = String(sale.grade ?? sale.gradeNumber ?? sale.grade_number ?? '').trim();
-          return company === selectedCompany && grade === selectedGrade;
-        });
-        if (match) {
-          const salePriceUSD = parseFloat(match.salePrice ?? match.sale_price ?? match.price ?? 0);
-          if (salePriceUSD > 0) priceSGD = Math.round(salePriceUSD * USD_TO_SGD * 100) / 100;
-        }
+      const isGraded = !isSealed && /^(PSA|BGS|CGC)\s+/i.test(item.conditionOrGrade || '');
+
+      if (isGraded) {
+        const gradedUSD = extractGradedPrice(results[0], item.conditionOrGrade);
+        if (gradedUSD != null) priceSGD = Math.round(gradedUSD * USD_TO_SGD * 100) / 100;
       }
 
-      // Fall back to raw market price if no graded price found
+      // Fall back to raw market price if not graded or no graded price returned
       if (priceSGD == null) {
         const priceUSD = extractResultPrice(results[0], isSealed);
         if (priceUSD == null) continue;
         priceSGD = Math.round(priceUSD * USD_TO_SGD * 100) / 100;
       }
+
       await _sb.from('portfolio_items')
         .update({ current_value: priceSGD, last_value_updated: new Date().toISOString() })
         .eq('id', item.id).eq('user_id', _currentUserId);
