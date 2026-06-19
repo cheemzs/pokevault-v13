@@ -953,10 +953,72 @@ async function savePortfolioItem() {
 
   if (!purchasePrice || purchasePrice <= 0) { toast('Please enter a valid purchase price.', 'error'); return; }
 
-  const imgUrl   = r.imageCdnUrl || r.imageCdnUrl400 || r.imageCdnUrl200 || null;
-  const itemId   = String(r.tcgPlayerId || r.id || r.productId || crypto.randomUUID());
-  const priceUSD = extractResultPrice(r, isSealed);
-  const currentValueSGD = priceUSD != null ? Math.round(priceUSD * USD_TO_SGD * 100) / 100 : null;
+  const imgUrl = r.imageCdnUrl || r.imageCdnUrl400 || r.imageCdnUrl200 || null;
+  const itemId = String(r.tcgPlayerId || r.id || r.productId || crypto.randomUUID());
+
+  // ── Graded price lookup ──────────────────────────────────────────
+  // If the user selected a PSA/BGS grade, try to find the matching
+  // eBay sale price from the API's ebaySales array.
+  // Grade options are formatted like "PSA 10" or "BGS 9.5".
+  // The API stores them as { gradingCompany: "PSA", grade: "10", salePrice: ... }
+  let currentValueSGD = null;
+
+  const gradeMatch = conditionOrGrade.match(/^(PSA|BGS|CGC)\s+(.+)$/i);
+  if (gradeMatch && !isSealed) {
+    const selectedCompany = gradeMatch[1].toUpperCase();
+    const selectedGrade   = gradeMatch[2].trim();
+
+    // ebaySales may already be on the result object (from the initial search fetch)
+    const ebaySales = r.ebaySales ?? r.ebay_sales ?? r.gradedSales ?? [];
+
+    const match = ebaySales.find(sale => {
+      const company = (sale.gradingCompany || sale.grading_company || sale.company || '').trim().toUpperCase();
+      const grade   = String(sale.grade ?? sale.gradeNumber ?? sale.grade_number ?? '').trim();
+      return company === selectedCompany && grade === selectedGrade;
+    });
+
+    if (match) {
+      const salePriceUSD = parseFloat(match.salePrice ?? match.sale_price ?? match.price ?? 0);
+      if (salePriceUSD > 0) {
+        currentValueSGD = Math.round(salePriceUSD * USD_TO_SGD * 100) / 100;
+      }
+    }
+
+    // If no eBay sale matched, fall back to fetching graded price live
+    if (currentValueSGD == null) {
+      try {
+        const params = new URLSearchParams({
+          action: 'search',
+          name: r.name,
+          language: _pfSearchLang,
+          includeEbay: 'true',
+        });
+        if (r.setName) params.set('set', r.setName);
+        const res  = await fetch('/api/pokeprice?' + params);
+        const data = await res.json();
+        const results = data.results || [];
+        const liveResult = results[0];
+        if (liveResult) {
+          const liveSales = liveResult.ebaySales ?? liveResult.ebay_sales ?? liveResult.gradedSales ?? [];
+          const liveMatch = liveSales.find(sale => {
+            const company = (sale.gradingCompany || sale.grading_company || sale.company || '').trim().toUpperCase();
+            const grade   = String(sale.grade ?? sale.gradeNumber ?? sale.grade_number ?? '').trim();
+            return company === selectedCompany && grade === selectedGrade;
+          });
+          if (liveMatch) {
+            const salePriceUSD = parseFloat(liveMatch.salePrice ?? liveMatch.sale_price ?? liveMatch.price ?? 0);
+            if (salePriceUSD > 0) currentValueSGD = Math.round(salePriceUSD * USD_TO_SGD * 100) / 100;
+          }
+        }
+      } catch (e) { console.warn('Graded price live fetch failed:', e); }
+    }
+  }
+
+  // Fall back to standard raw market price if no graded price was found
+  if (currentValueSGD == null) {
+    const priceUSD = extractResultPrice(r, isSealed);
+    currentValueSGD = priceUSD != null ? Math.round(priceUSD * USD_TO_SGD * 100) / 100 : null;
+  }
 
   const row = {
     user_id:            _currentUserId,
@@ -1113,10 +1175,32 @@ async function refreshPortfolioValues(silent = false) {
       const results = d.results || [];
       if (!results.length) continue;
 
-      const priceUSD = extractResultPrice(results[0], isSealed);
-      if (priceUSD == null) continue;
+      // ── Graded price lookup during refresh ────────────────────────
+      // If this portfolio item has a PSA/BGS/CGC grade, look for the
+      // matching eBay sale price instead of the raw market price.
+      let priceSGD = null;
+      const gradeMatch = (item.conditionOrGrade || '').match(/^(PSA|BGS|CGC)\s+(.+)$/i);
+      if (gradeMatch && !isSealed) {
+        const selectedCompany = gradeMatch[1].toUpperCase();
+        const selectedGrade   = gradeMatch[2].trim();
+        const ebaySales = results[0].ebaySales ?? results[0].ebay_sales ?? results[0].gradedSales ?? [];
+        const match = ebaySales.find(sale => {
+          const company = (sale.gradingCompany || sale.grading_company || sale.company || '').trim().toUpperCase();
+          const grade   = String(sale.grade ?? sale.gradeNumber ?? sale.grade_number ?? '').trim();
+          return company === selectedCompany && grade === selectedGrade;
+        });
+        if (match) {
+          const salePriceUSD = parseFloat(match.salePrice ?? match.sale_price ?? match.price ?? 0);
+          if (salePriceUSD > 0) priceSGD = Math.round(salePriceUSD * USD_TO_SGD * 100) / 100;
+        }
+      }
 
-      const priceSGD = Math.round(priceUSD * USD_TO_SGD * 100) / 100;
+      // Fall back to raw market price if no graded price found
+      if (priceSGD == null) {
+        const priceUSD = extractResultPrice(results[0], isSealed);
+        if (priceUSD == null) continue;
+        priceSGD = Math.round(priceUSD * USD_TO_SGD * 100) / 100;
+      }
       await _sb.from('portfolio_items')
         .update({ current_value: priceSGD, last_value_updated: new Date().toISOString() })
         .eq('id', item.id).eq('user_id', _currentUserId);
